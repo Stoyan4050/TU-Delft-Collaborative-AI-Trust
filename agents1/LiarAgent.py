@@ -10,23 +10,34 @@ from matrx.messages.message import Message
 
 
 class Phase(enum.Enum):
-    PLAN_PATH_TO_CLOSED_DOOR = 1,
-    FOLLOW_PATH_TO_CLOSED_DOOR = 2,
-    OPEN_DOOR = 3,
-    ENTER_ROOM = 4,
-    TRAVERSE_ROOM = 5,
-    DELIVER_ITEM = 6,
-    FOLLOW_PATH_TO_DROP_OFF_LOCATION = 7,
+    PLAN_PATH_TO_CLOSED_DOOR = 1
+    FOLLOW_PATH_TO_CLOSED_DOOR = 2
+    OPEN_DOOR = 3
+    ENTER_ROOM = 4
+    TRAVERSE_ROOM = 5
+    DELIVER_ITEM = 6
+    FOLLOW_PATH_TO_DROP_OFF_LOCATION = 7
     DROP_OBJECT = 8
 
+class PossibleActions(enum.Enum):
+    MOVING_TO_ROOM = 1
+    OPENING_DOOR = 2
+    SEARCHING_A_ROOM = 3
+    ENCOUNTERING_A_BLOCK = 4
+    PICKING_UP_A_BLOCK = 5
+    DROPPING_A_BLOCK = 6
 
-class StrongAgent(BW4TBrain):
+
+class LiarAgent(BW4TBrain):
 
     def __init__(self, settings: Dict[str, object]):
         super().__init__(settings)
         self._phase = Phase.PLAN_PATH_TO_CLOSED_DOOR
         self._teamMembers = []
+        # This list only keeps track of the remaining desired_objects
         self.desired_objects = []
+        # this list keeps track of all desired objects and is not updated throughout the execution of the simulation
+        self.all_desired_objects = []
         self.agent_name = None
         # only the strong agents can pick 2 blocks
         # for other agents this is 0 or 1
@@ -78,13 +89,15 @@ class StrongAgent(BW4TBrain):
                 found_obj.append((obj["visualization"], obj["location"]))
             self.desired_objects = sorted(found_obj, key=lambda x: x[1], reverse=True)
 
+            self.all_desired_objects = self.desired_objects.copy()
+
         while True:
 
             # Phase entering room
             if Phase.ENTER_ROOM == self._phase:
                 # Get the room name for the latest chosen room from the phase PLAN_PATH_TO_CLOSED_DOOR
                 room = self._door['room_name']
-                self._messageMoveRoom(room)
+                # self._messageMoveRoom(room)
                 # Find all area tiles locations of the room to traverse
                 area = list(map(
                     lambda x: x["location"],
@@ -95,7 +108,13 @@ class StrongAgent(BW4TBrain):
                 # Sort the location of the tiles and traverse them
                 sorted_by_xy = sorted(sorted(area, key=lambda x: x[1]))
                 room = self._door['room_name']
-                self._messageSearchThrough(room)
+                possible_action = self.pickAnAction(PossibleActions.SEARCHING_A_ROOM)
+                if possible_action == PossibleActions.SEARCHING_A_ROOM:
+                    # be honest
+                    self._sendMessage("Searching through " + room)
+                else:
+                    self._sendMessage(self.generateAMessageFromAction(possible_action))
+
                 # Add the locations of the tiles to traverse in order to the navigator
                 self._navigator.reset_full()
                 self._navigator.add_waypoints(sorted_by_xy)
@@ -127,34 +146,46 @@ class StrongAgent(BW4TBrain):
                             # In case they are desired objects for the strong agent we are interested only in the
                             # first two items from bottom to up, if they are we pick them
                             # in case they are not we save them in the memory for later use
-                            self._messageFoundGoalBlock(str(obj[0]), str(obj[2]))
+                            possible_action = self.pickAnAction(PossibleActions.ENCOUNTERING_A_BLOCK)
+                            if possible_action == PossibleActions.ENCOUNTERING_A_BLOCK:
+                                self._sendMessage("Found goal block " + str(obj[0]) + " at location " + str(obj[2]))
+                            else:
+                                self._sendMessage(self.generateAMessageFromAction(possible_action))
 
                             if ((des, loc)) in self.desired_objects:
-                                if self.capacity < 2:
+                                if self.capacity == 0:
                                     self.capacity += 1
                                     self.drop_off_locations.append((obj[0], obj[1], loc))
                                     self.desired_objects.remove((des, loc))
-                                    self._messagePickUpGoalBlock(str(obj[0]), str(obj[2]))
+                                    possible_action = self.pickAnAction(PossibleActions.PICKING_UP_A_BLOCK)
+                                    if possible_action == PossibleActions.PICKING_UP_A_BLOCK:
+                                        # be honest
+                                        self._sendMessage("Picking up goal block " + str(des) + " at location " + str(loc))
+                                    else:
+                                        self._sendMessage(self.generateAMessageFromAction(possible_action))
 
                                     for dict1 in self.memory:
                                         if obj[0]["shape"] == dict1["visualization"]["shape"] \
                                                 and obj[0]["colour"] == dict1["visualization"]["colour"]:
                                             self.memory.remove(dict1)
 
-                                    # Grab object if there is a capacity
                                     return GrabObject.__name__, {'object_id': obj[1]}
                                 else:
                                     self.addToMemory(obj[0], obj[2], loc)
-                                    print("MEMORY", self.memory)
+
+                                # Note a small bug was found. It does not find and pick object
+                                # when the memory is pointing to the middle room (room 5).
+                                # In all other cases it work properly
+                                # Grab object if there is a capacity
+
 
                 # In case we are filled, deliver items, next phase
-                if self.capacity > 1:
+                if self.capacity == 1:
+                    # print("Deliver 1")
                     self._phase = Phase.DELIVER_ITEM
                 # In case there is only one object left needed and is found deliver it, next phase
-                elif len(self.desired_objects) < 2 and self.capacity > 0:
-                    self._phase = Phase.DELIVER_ITEM
-
                 # If no desired object was found just move
+
                 if action != None:
                     return action, {}
                 elif self._phase != Phase.DELIVER_ITEM:
@@ -170,6 +201,7 @@ class StrongAgent(BW4TBrain):
                 locations.sort(reverse=True)
                 self._navigator.reset_full()
                 # Add the navigation
+                # print(locations)
                 self._navigator.add_waypoints(locations)
 
                 # Next phase
@@ -186,7 +218,17 @@ class StrongAgent(BW4TBrain):
                         # if it is the correct location drop the object
                         self._phase = Phase.DROP_OBJECT
                         self.drop_off_locations.remove((obj_viz, obj_id, loc))
-                        self._messageDroppedGoalBlock(str(obj_viz), str(loc))
+                        possible_action = self.pickAnAction(PossibleActions.DROPPING_A_BLOCK)
+                        if possible_action == PossibleActions.DROPPING_A_BLOCK:
+                            # TODO cheating a little bit here, since the visualization is not saved anywhere
+                            # for now the visualization of the dropped block is taken from the self.desired_objects list
+                            # by getting the block that has a drop off location equal to the agent's current location
+                            # update this after the memory of this agent is updated to be like the StrongAgent's memory
+                            # agent_location = state[self._state_tracker.agent_id]['location']
+                            # self._sendMessage("Dropped goal block " + str(list(filter(lambda block: block[1] == agent_location, self.desired_objects))[0]) + " at location " + str(agent_location))
+                            self._messageDroppedGoalBlock(str(obj_viz), str(loc))
+                        else:
+                            self._sendMessage(self.generateAMessageFromAction(possible_action))
 
                 # if not already dropped the object move to the next location
                 if not flag:
@@ -220,7 +262,8 @@ class StrongAgent(BW4TBrain):
                                if 'class_inheritance' in door and 'Door' in door['class_inheritance'] and not door[
                         'is_open']]
                 if len(self.memory) > 0:
-                    print("Going to MEMORY", self.memory)
+
+                    # print("MEMORY", self.memory)
                     self._navigator.reset_full()
                     self._navigator.add_waypoints([self.memory[0]["location"]])
 
@@ -257,7 +300,13 @@ class StrongAgent(BW4TBrain):
                     doorLoc = doorLoc[0], doorLoc[1] + 1
 
                     # Send message of current action
-                    self._sendMessage('Moving to door of ' + self._door['room_name'], agent_name)
+                    possible_action = self.pickAnAction(PossibleActions.MOVING_TO_ROOM)
+                    if possible_action == PossibleActions.MOVING_TO_ROOM:
+                        # TODO obj_id or room_name?
+                        self._sendMessage("Moving to " + self._door['obj_id'])
+                    else:
+                        self._sendMessage(self.generateAMessageFromAction(possible_action))
+                    # self._sendMessage('Moving to door of ' + self._door['room_name'], agent_name)
                     self._navigator.add_waypoints([doorLoc])
                     # go to the next phase
                     self._phase = Phase.FOLLOW_PATH_TO_CLOSED_DOOR
@@ -273,37 +322,69 @@ class StrongAgent(BW4TBrain):
 
             if Phase.OPEN_DOOR == self._phase:
                 self._phase = Phase.ENTER_ROOM
+
+                # send a message to notify the others that you are opening a door
+                possible_action = self.pickAnAction(PossibleActions.OPENING_DOOR)
+                if possible_action == PossibleActions.OPENING_DOOR:
+                    self._sendMessage("Opening door of " + self._door['obj_id'])
+                else:
+                    self._sendMessage(self.generateAMessageFromAction(possible_action))
+
                 # Open door
                 # If already opened, no change
-                self._messageOpenDoor(self._door['room_name'])
                 return OpenDoorAction.__name__, {'object_id': self._door['obj_id']}
 
-    def _sendMessage(self, mssg, sender):
+    # pick an action from the PossibleActions with 20% chance it is the actual current action
+    def pickAnAction(self, currentAction):
+        if random.randint(1,10) > 8:
+            return currentAction
+        return PossibleActions(random.randint(1, len(PossibleActions)))
+
+    # generate a random message from the given action
+    def generateAMessageFromAction(self, action):
+        print("generating a message from action")
+        if action == PossibleActions.MOVING_TO_ROOM:
+            return "Moving to " + (random.choice(self.all_rooms) if len(self.all_rooms) != 0 else "0?")
+        elif action == PossibleActions.OPENING_DOOR:
+            return "Opening door of " + (random.choice(self.all_rooms) if len(self.all_rooms) != 0 else "0?")
+        elif action == PossibleActions.SEARCHING_A_ROOM:
+            return "Searching through " + (random.choice(self.all_rooms) if len(self.all_rooms) != 0 else "0?")
+        elif action == PossibleActions.ENCOUNTERING_A_BLOCK:
+            # when lying about finding, picking up, or dropping a goal block, use your own location, otherwise the location could be invalid
+            return "Found goal block " + str(random.choice(self.all_desired_objects)[0]) + " at location " + str(self.state[self._state_tracker.agent_id]['location'])
+        elif action == PossibleActions.PICKING_UP_A_BLOCK:
+            return "Picking up goal block " + str(random.choice(self.all_desired_objects)[0]) + " at location " + str(self.state[self._state_tracker.agent_id]['location'])
+        elif action == PossibleActions.DROPPING_A_BLOCK:
+            return "Dropped goal block " + str(random.choice(self.all_desired_objects)[0]) + " at location " + str(self.state[self._state_tracker.agent_id]['location'])
+        else:
+            print("Unexpected action received: ", action)
+            exit(-1)
+
+    def _sendMessage(self, mssg):
         '''
         Enable sending messages in one line of code
         '''
-        msg = Message(content=mssg, from_id=sender)
+        msg = Message(content=mssg, from_id=self.agent_name)
         if msg.content not in self.received_messages:
             self.send_message(msg)
 
     def _messageMoveRoom(self, room):
-        self._sendMessage("Moving to " + room, self.agent_name)
+        self._sendMessage("Moving to " + room)
 
     def _messageOpenDoor(self, room):
-        self._sendMessage("Opening door of " + room, self.agent_name)
+        self._sendMessage("Opening door of " + room)
 
     def _messageSearchThrough(self, room):
-        self._sendMessage("Searching through " + room, self.agent_name)
+        self._sendMessage("Searching through " + room)
 
     def _messageFoundGoalBlock(self, block_visualization, location):
-        self._sendMessage("Found goal block " + block_visualization + " at location " + location, self.agent_name)
+        self._sendMessage("Found goal block " + block_visualization + " at location " + location)
 
     def _messagePickUpGoalBlock(self, block_visualization, location):
-        self._sendMessage("Picking up goal block " + block_visualization + " at location " + location, self.agent_name)
+        self._sendMessage("Picking up goal block " + block_visualization + " at location " + location)
 
     def _messageDroppedGoalBlock(self, block_visualization, location):
-        self._sendMessage("Dropped goal block " + block_visualization + " at drop location " + location,
-                          self.agent_name)
+        self._sendMessage("Dropped goal block " + block_visualization + " at drop location " + location)
 
     def _processMessages(self, teamMembers):
         '''
@@ -348,3 +429,6 @@ class StrongAgent(BW4TBrain):
             self.memory.append({"visualization": vis,
                                 "location": loc,
                                 "drop_off_location": drop})
+
+        self.memory = sorted(self.memory, key=lambda x: x["drop_off_location"],
+                             reverse=True)
