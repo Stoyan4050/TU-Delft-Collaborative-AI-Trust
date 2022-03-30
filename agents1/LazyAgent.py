@@ -161,8 +161,6 @@ class LazyAgent(BW4TBrain):
                                 # first two items from bottom to up, if they are we pick them
                                 # in case they are not we save them in the memory for later use
                                 self._messageFoundGoalBlock(str(obj[0]), str(loc))
-                                # print(self.desired_objects[0])
-                                # print((des, loc))
 
                                 if ((des, loc)) in self.desired_objects:
                                     decision = self.getRandom50()
@@ -223,7 +221,6 @@ class LazyAgent(BW4TBrain):
             if Phase.FOLLOW_PATH_TO_DROP_OFF_LOCATION == self._phase:
                 flag = False
                 # Check if the current location of the agent is the correct drop off location
-                # print(self.drop_off_locations)
 
                 if self.stop_when == 0:
                     self._phase = Phase.DROP_OBJECT
