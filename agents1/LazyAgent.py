@@ -420,7 +420,7 @@ class LazyAgent(BW4TBrain):
                     print("GO TO ROOM: ", decision)
 
                     if decision:
-                        self._messageMoveRoom(self._door['room_name'])
+                        # self._messageMoveRoom(self._door['room_name'])
                         #self._sendMessage('Moving to door of ' + self._door['room_name'], agent_name)
                         # go to the next phase
                         self._phase = Phase.FOLLOW_PATH_TO_CLOSED_DOOR
